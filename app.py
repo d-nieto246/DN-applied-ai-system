@@ -1,7 +1,11 @@
 import streamlit as st
 from datetime import datetime, time
+from dotenv import load_dotenv
+from pathlib import Path
 
 from pawpal_system import Owner, Pet, Scheduler, Task
+
+load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -9,33 +13,23 @@ st.title("🐾 PawPal+")
 
 st.markdown(
     """
-Welcome to the PawPal+ starter app.
-
-This file is intentionally thin. It gives you a working Streamlit app so you can start quickly,
-but **it does not implement the project logic**. Your job is to design the system and build it.
-
-Use this app as your interactive demo once your backend classes/functions exist.
+**PawPal+** is an AI-powered pet care planner. Add your pets below, then use the
+**AI Care Planner** to let Claude automatically build a full care schedule — including
+species-appropriate tasks, spaced times, and automatic conflict resolution.
 """
 )
 
-with st.expander("Scenario", expanded=True):
+with st.expander("How it works", expanded=False):
     st.markdown(
         """
-**PawPal+** is a pet care planning assistant. It helps a pet owner plan care tasks
-for their pet(s) based on constraints like time, priority, and preferences.
+**Manual scheduling** — use the Add Pet and Add Task forms to build a schedule yourself.
 
-You will design and implement the scheduling logic and connect it to this Streamlit UI.
-"""
-    )
-
-with st.expander("What you need to build", expanded=True):
-    st.markdown(
-        """
-At minimum, your system should:
-- Represent pet care tasks (what needs to happen, how long it takes, priority)
-- Represent the pet and the owner (basic info and preferences)
-- Build a plan/schedule for a day that chooses and orders tasks based on constraints
-- Explain the plan (why each task was chosen and when it happens)
+**AI Care Planner** — describe what you need in plain English (e.g. *"Plan a full day for Max"*).
+Claude then:
+1. Reads your pet list and existing schedule
+2. Adds appropriate care tasks (feeding, walks, grooming, litter cleaning, etc.)
+3. Checks for time conflicts and reschedules automatically if any are found
+4. Returns a plain-language summary of what was planned and why
 """
     )
 
@@ -229,3 +223,71 @@ if pets:
         st.info("No scheduled tasks yet.")
 else:
     st.info("Add at least one pet before scheduling tasks.")
+
+# ── AI Care Planner ───────────────────────────────────────────────────────────
+
+st.divider()
+st.subheader("AI Care Planner")
+st.caption(
+    "Describe what you need in plain English. "
+    "The AI will plan tasks for your pets, schedule them, "
+    "detect any conflicts, and fix them automatically."
+)
+
+if not pets:
+    st.info("Add at least one pet before using the AI planner.")
+else:
+    with st.form("ai_planner_form", clear_on_submit=False):
+        ai_request = st.text_area(
+            "What would you like to plan?",
+            value="Plan a full day of care tasks for all my pets.",
+            height=80,
+        )
+        ai_plan_date = st.date_input("Plan for date", value=datetime.today())
+        ai_submitted = st.form_submit_button("Generate AI Plan")
+
+    if ai_submitted:
+        api_key_present = bool(__import__("os").environ.get("ANTHROPIC_API_KEY"))
+        if not api_key_present:
+            st.error(
+                "ANTHROPIC_API_KEY is not set. "
+                "Create a .env file with ANTHROPIC_API_KEY=your-key and restart the app."
+            )
+        else:
+            from agent import PawPalAgent
+
+            plan_dt = datetime.combine(ai_plan_date, datetime.min.time())
+            with st.spinner("AI is planning your pet care schedule..."):
+                agent = PawPalAgent(
+                    owner=st.session_state["owner"],
+                    scheduler=st.session_state["scheduler"],
+                )
+                final_response = agent.run(ai_request, plan_date=plan_dt)
+
+            st.session_state["ai_result"] = {
+                "response": final_response,
+                "steps": agent.steps,
+            }
+            st.rerun()
+
+    # Display the last AI result (persists across reruns)
+    if "ai_result" in st.session_state:
+        result = st.session_state["ai_result"]
+
+        st.markdown("### AI Plan")
+        st.markdown(result["response"])
+
+        with st.expander("Agent work log", expanded=False):
+            for step in result["steps"]:
+                icon = "✅" if step.ok else "⚠️"
+                if step.kind == "tool_call":
+                    st.markdown(f"**{icon} Tool call:** `{step.label}`")
+                    try:
+                        st.json(__import__("json").loads(step.detail))
+                    except Exception:
+                        st.caption(step.detail)
+                elif step.kind == "tool_result":
+                    st.markdown(f"**{icon} Result from** `{step.label}`")
+                    st.caption(step.detail)
+                else:
+                    st.markdown(f"{icon} **{step.label}:** {step.detail}")
